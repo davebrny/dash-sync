@@ -1,6 +1,6 @@
 /*
 [script info]
-version     = 0.1
+version     = 0.2
 description = folder sync for the bragi dash pro
 author      = davebrny
 ahk version = 1.1.26.01
@@ -9,6 +9,7 @@ source      = https://github.com/davebrny/dash-sync
 
 [settings]
 local_folder=
+show_warning=true
 */
 
 #noEnv
@@ -23,6 +24,7 @@ start_with_windows(1)
 global the_dash, watching, local_folder
 file_types := "mp3,m4a"
 
+iniRead, show_warning, % a_lineFile, settings, show_warning
 iniRead, local_folder, % a_lineFile, settings, local_folder
 if (local_folder = "")
     goSub, folder_setup
@@ -106,13 +108,7 @@ loop, files, % the_dash ":\My Music\*.*", FDR
     {
     stringReplace, local_item, % a_loopFileFullPath, % dash_folder, % local_folder
     if !fileExist(local_item)    ; if not in the local folder, then remove
-        {
-        menu, tray, icon, dash sync b.ico   ; show red tray icon
-        if (fileExist(a_loopFileFullPath) = "D")    ; if folder
-            fileRemoveDir, % a_loopFileFullPath, 1
-        else if a_loopFileExt in % file_types       ; if file
-            fileDelete, % a_loopFileFullPath
-        }
+        delete_list .= a_loopFileFullPath "`n"
     }
 
 loop, files, % local_folder "\*.*", FDR
@@ -129,5 +125,36 @@ loop, files, % local_folder "\*.*", FDR
             fileCopy, % a_loopFileFullPath, % dash_item
         }
     }
+
+if (delete_list)
+    {
+    if (show_warning = "true")
+        {
+        strReplace(delete_list, "`n", "", item_count)
+        msg := item_count " files are about to be deleted from the dash.`n"
+            . "do you want to continue?`n`n"
+            . "(set 'show_warning' to 'false' to delete files without asking)"
+        msgBox, 4, , % msg
+        ifMsgBox, yes
+            goSub, delete_files
+        }
+    else goSub, delete_files  ; delete without warning
+    delete_list := ""
+    }
+
 menu, tray, icon, dash sync.ico  ; reset icon
+return
+
+
+
+delete_files:    
+menu, tray, icon, dash sync b.ico   ; show red tray icon
+loop, parse, % delete_list, `n,
+    {
+    splitPath, % a_loopField, filename, , file_ext
+    if (fileExist(a_loopField) = "D")    ; if folder
+        fileRemoveDir, % a_loopField, 1
+    else if file_ext in % file_types     ; if file
+        fileDelete, % a_loopField
+    }
 return
