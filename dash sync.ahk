@@ -1,6 +1,6 @@
 /*
 [script info]
-version     = 0.2
+version     = 0.3
 description = folder sync for the bragi dash pro
 author      = davebrny
 ahk version = 1.1.26.01
@@ -9,6 +9,7 @@ source      = https://github.com/davebrny/dash-sync
 
 [settings]
 local_folder=
+show_transfer=true
 show_warning=true
 */
 
@@ -24,8 +25,9 @@ start_with_windows(1)
 global the_dash, watching, local_folder
 file_types := "mp3,m4a"
 
-iniRead, show_warning, % a_lineFile, settings, show_warning
-iniRead, local_folder, % a_lineFile, settings, local_folder
+iniRead, show_transfer, % a_lineFile, settings, show_transfer
+iniRead, show_warning,  % a_lineFile, settings, show_warning
+iniRead, local_folder,  % a_lineFile, settings, local_folder
 if (local_folder = "")
     goSub, folder_setup
 
@@ -92,6 +94,7 @@ goSub, sync_dash    ; (sync once, then wait for changes)
 watchFolder(local_folder, "ccchanges", true, "0x03")
 return
 
+
 dash_disconnected:
 watching := false
 watchFolder("**END", "1")
@@ -101,6 +104,7 @@ return
 ccchanges(directory, changes) {   ;# trigger sync on any new or renamed file/folder
     goSub, sync_dash
 }
+
 
 
 sync_dash:    ;# make the dash's on-board storage match the local folder
@@ -118,11 +122,16 @@ loop, files, % local_folder "\*.*", FDR
     stringReplace, dash_item, % a_loopFileFullPath, % local_folder, % dash_folder
     if !fileExist(dash_item)    ; if not on the dash's drive, then create or copy
         {
-        menu, tray, icon, dash sync b.ico
+        change_icon("dash sync b.ico")   ; show red 'busy' icon
         if (fileExist(a_loopFileFullPath) = "D")
             fileCreateDir, % dash_item
         else if a_loopFileExt in % file_types
+            {
+            goSub, transfer_gui   ; show transfer window
+            guiControl, text, title_text, transferring:
+            guiControl, text, transfer_file, % a_loopFileName
             fileCopy, % a_loopFileFullPath, % dash_item
+            }
         }
     }
 
@@ -142,19 +151,52 @@ if (delete_list)
     delete_list := ""
     }
 
-menu, tray, icon, dash sync.ico  ; reset icon
+guiControl, text, title_text, sync complete
+guiControl, text, transfer_file,
+change_icon("dash sync.ico")   ; reset icon
 return
 
 
 
 delete_files:    
-menu, tray, icon, dash sync b.ico   ; show red tray icon
+change_icon("dash sync b.ico")
 loop, parse, % delete_list, `n,
     {
     splitPath, % a_loopField, filename, , file_ext
+    guiControl, text, title_text, deleting:
+    guiControl, text, transfer_file, % filename  
     if (fileExist(a_loopField) = "D")    ; if folder
         fileRemoveDir, % a_loopField, 1
     else if file_ext in % file_types     ; if file
         fileDelete, % a_loopField
     }
+return
+
+
+
+change_icon(icon_name) {
+    menu, tray, icon, % icon_name
+    h_icon := dllCall("LoadImage", uint, 0, str, icon_name, uint, 1, int, 0, int, 0, uint, 0x10)
+    gui +lastFound
+    sendMessage, 0x80, 0, h_icon   ; set window title icon
+    sendMessage, 0x80, 1, h_icon   ; set taskbar icon
+}
+
+
+transfer_gui:
+if (show_transfer = "true") and !winExist("dash sync ahk_class AutoHotkeyGUI")
+    {
+    gui, destroy
+    gui, font, s11, consolas
+    gui, add, text, x10 y10 w350 vtitle_text, transferring:
+    gui, font, s14, consolas
+    gui, add, text, x10 y45 w450 vTransfer_file,
+    gui, show, w450 h100, dash sync
+    winSet, transparent, 250, dash sync
+    }
+return
+
+guiClose:
+guiEscape:
+gui, destroy
 return
