@@ -1,6 +1,6 @@
 /*
 [script info]
-version     = 0.3
+version     = 0.4
 description = folder sync for the bragi dash pro
 author      = davebrny
 ahk version = 1.1.26.01
@@ -10,7 +10,9 @@ source      = https://github.com/davebrny/dash-sync
 [settings]
 local_folder=
 show_transfer=true
+close_after=false
 show_warning=true
+ignore_pattern=\.sync,playlist x
 */
 
 #noEnv
@@ -22,12 +24,14 @@ menu, tray, useErrorLevel
 menu, tray, icon, dash sync.ico
 start_with_windows(1)
 
-global the_dash, watching, local_folder
+global d, the_dash, watching, local_folder
 file_types := "mp3,m4a"
 
-iniRead, show_transfer, % a_lineFile, settings, show_transfer
-iniRead, show_warning,  % a_lineFile, settings, show_warning
-iniRead, local_folder,  % a_lineFile, settings, local_folder
+iniRead, show_transfer,  % a_lineFile, settings, show_transfer
+iniRead, close_after,    % a_lineFile, settings, close_after
+iniRead, show_warning,   % a_lineFile, settings, show_warning
+iniRead, ignore_pattern, % a_lineFile, settings, ignore_pattern
+iniRead, local_folder,   % a_lineFile, settings, local_folder
 if (local_folder = "")
     goSub, folder_setup
 
@@ -106,72 +110,153 @@ ccchanges(directory, changes) {   ;# trigger sync on any new or renamed file/fol
 }
 
 
-
 sync_dash:    ;# make the dash's on-board storage match the local folder
-loop, files, % the_dash ":\My Music\*.*", FDR
+local_list := list_files(local_folder "\*.*")
+dash_list  := list_files(the_dash ":\My Music\*.*")
+    ; substitute the parent directory of the dash with that of the local
+local_list_sub := strReplace(dash_list, dash_folder, local_folder)
+
+if (local_list != local_list_sub)
     {
-    stringReplace, local_item, % a_loopFileFullPath, % dash_folder, % local_folder
-    if !fileExist(local_item)    ; if not in the local folder, then remove
-        delete_list .= a_loopFileFullPath "`n"
+    goSub, get_file_changes
+    goSub, process_changes
+    }
+goSub, sync_complete
+return
+
+
+list_files(folder_path) {
+    global ignore_pattern, file_types
+    loop, files, % folder_path, FDR
+        {
+        if a_loopFileFullPath contains %ignore_pattern%
+            continue
+        if (a_loopFileExt = "") or inStr(file_types, a_loopFileExt)
+            file_list .= a_loopFileFullPath "`n"  ; only add folders and supported file types
+        }
+    sort, file_list
+    return file_list
+}
+
+
+get_file_changes:
+changes := []
+loop, parse, % local_list, `n
+    {                              ; substitute local directory with the dash's
+    stringReplace, this_loop, % a_loopField, % local_folder, % dash_folder
+    if !inStr(dash_list, this_loop)   ; if file not in the correct place in the dash 
+        {
+        splitPath, % this_loop, filename, dash_dir
+        stringReplace, local_dir, % dash_dir, % dash_folder, % local_folder
+        if inStr(dash_list, "\" filename)    ; check if the file is elsewhere on the dash
+            {
+            fileGetSize, file_size, % local_dir "\" filename
+            found_path := get_path(dash_list, filename, file_size)
+            changes.push([ "move" , found_path , dash_dir "\" filename ])   ;# move
+            move_list .= found_path "`n"
+            }
+        else changes.push([ "copy" , local_dir "\" filename , this_loop ])  ;# copy
+        }
     }
 
-loop, files, % local_folder "\*.*", FDR
+loop, parse, % local_list_sub, `n
     {
-    if inStr(a_loopFileFullPath, "\.sync")
-        continue    ; ignore resilio sync
-    stringReplace, dash_item, % a_loopFileFullPath, % local_folder, % dash_folder
-    if !fileExist(dash_item)    ; if not on the dash's drive, then create or copy
+    if !inStr(local_list, a_loopField)  ; if file on the dash but no longer in the local folder
         {
-        change_icon("dash sync b.ico")   ; show red 'busy' icon
-        if (fileExist(a_loopFileFullPath) = "D")
-            fileCreateDir, % dash_item
-        else if a_loopFileExt in % file_types
+        splitPath, % a_loopField, filename, local_dir
+        stringReplace, dash_dir, % local_dir, % local_folder, % dash_folder
+        if inStr(move_list, dash_dir "\" filename)
+            continue ; if this file is going to be moved
+        changes.push([ "delete", dash_dir "\" filename ])    ;# delete
+        ++delete_index
+        }
+    }
+return
+
+
+
+get_path(file_list, filename, file_size) {   ;# find a file that has been moved to another folder
+    strReplace(file_list, filename, "", file_count)
+    loop % file_count    ; in case there are duplicate filenames
+        {
+        stringGetPos, pos, file_list, % filename, % "L" a_index
+        stringMid, text_left, file_list, pos + strLen(filename), , L
+        stringGetPos, pos, text_left, `n, R1
+        stringMid, path, text_left, pos + 2
+
+        fileGetSize, this_size, % path   ; narrow the changes of matching the wrong file
+        if (this_size = file_size) 
+            return match := path
+        }
+    until (match)
+}
+
+
+show_changes:
+change_list := ""
+loop, % changes.maxIndex()
+    {
+    change_list .= (changes[a_index].1 = last ? "`n" : "`n`n") 
+                .   changes[a_index].1 " - " changes[a_index].2  
+                .  (changes[a_index].3 ? ("`nto     " changes[a_index].3) : "")
+    last := changes[a_index].1
+    }
+msgBox, % clipboard := change_list
+return
+
+
+process_changes:
+; goSub, show_changes
+delete_files := true
+if (delete_index) and (show_warning = "true")
+    {
+    msg := delete_index " files are about to be moved or deleted.`ndo you want to continue?`n`n"
+        . "(set 'show_warning' to 'false' to hide this warning)"
+    msgBox, 4, , % msg
+    ifMsgBox, no
+         delete_files := false
+    }
+
+change_icon("dash sync b.ico")   ; show red 'busy' icon
+loop, % changes.maxIndex()
+    {
+    action := changes[a_index].1
+    source := changes[a_index].2
+    dest   := changes[a_index].3
+    splitPath, % source, filename
+    splitPath, % dest, , directory
+    if !fileExist(directory)
+        fileCreateDir, % directory
+
+    if (action = "copy")
+        {
+        goSub, transfer_gui   ; show transfer window
+        if (fileExist(source) = "D") ; if folder
+            fileCreateDir, % dest
+        else ; if file
             {
-            goSub, transfer_gui   ; show transfer window
             guiControl, text, title_text, transferring:
-            guiControl, text, transfer_file, % a_loopFileName
-            fileCopy, % a_loopFileFullPath, % dash_item
+            guiControl, text, transfer_file, % filename
+            menu, tray, tip, % "transferring: " filename
+            fileCopy, % source, % dest
             }
         }
-    }
-
-if (delete_list)
-    {
-    if (show_warning = "true")
+    else if (action = "move")
         {
-        strReplace(delete_list, "`n", "", item_count)
-        msg := item_count " files are about to be deleted from the dash.`n"
-            . "do you want to continue?`n`n"
-            . "(set 'show_warning' to 'false' to delete files without asking)"
-        msgBox, 4, , % msg
-        ifMsgBox, yes
-            goSub, delete_files
+        guiControl, text, title_text, moving:
+        guiControl, text, transfer_file, % filename
+        fileMove, % source, % dest
         }
-    else goSub, delete_files  ; delete without warning
-    delete_list := ""
-    }
-
-guiControl, text, title_text, sync complete
-guiControl, text, transfer_file,
-change_icon("dash sync.ico")   ; reset icon
-return
-
-
-
-delete_files:    
-change_icon("dash sync b.ico")
-loop, parse, % delete_list, `n,
-    {
-    splitPath, % a_loopField, filename, , file_ext
-    guiControl, text, title_text, deleting:
-    guiControl, text, transfer_file, % filename  
-    if (fileExist(a_loopField) = "D")    ; if folder
-        fileRemoveDir, % a_loopField, 1
-    else if file_ext in % file_types     ; if file
-        fileDelete, % a_loopField
+    else if (action = "delete") and (delete_files = true)
+        {
+        guiControl, text, title_text, deleting:
+        guiControl, text, transfer_file, % filename  
+        if (fileExist(source) = "D")
+             fileRemoveDir, % source, 1
+        else fileDelete, % source
+        }  
     }
 return
-
 
 
 change_icon(icon_name) {
@@ -199,4 +284,21 @@ return
 guiClose:
 guiEscape:
 gui, destroy
+return
+
+
+sync_complete:
+dash_list := ""
+local_list := ""
+local_list_sub := ""
+changes := ""
+delete_index := ""
+move_list := ""
+guiControl, text, title_text, sync complete
+guiControl, text, transfer_file,
+change_icon("dash sync.ico")   ; reset icon
+menu, tray, tip, % a_scriptName
+sleep 5000
+if (close_after = "true")
+    winClose, dash sync ahk_class AutoHotkeyGUI
 return
